@@ -2,18 +2,16 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
-	"io/ioutil"
-	"net/url"
-	"os"
-	"os/exec"
-	"strings"
-
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/terraform"
+	"gopkg.in/yaml.v2"
+	"io"
+	"io/ioutil"
+	"os"
+	"os/exec"
+	"strings"
 )
 
 type config struct {
@@ -63,6 +61,24 @@ func resourceManifest() *schema.Resource {
 		Delete: resourceManifestDelete,
 
 		Schema: map[string]*schema.Schema{
+			"name": &schema.Schema{
+				Type:      schema.TypeString,
+				Required:  true,
+				Sensitive: false,
+				ForceNew: true,
+			},
+			"namespace": &schema.Schema{
+				Type:      schema.TypeString,
+				Optional: true,
+				Sensitive: false,
+				ForceNew: true,
+			},
+			"kind": &schema.Schema{
+				Type:      schema.TypeString,
+				Required: true,
+				Sensitive: false,
+				ForceNew: true,
+			},
 			"content": &schema.Schema{
 				Type:      schema.TypeString,
 				Required:  true,
@@ -134,89 +150,100 @@ func kubectl(m interface{}, kubeconfig string, args ...string) *exec.Cmd {
 	return exec.Command("kubectl", args...)
 }
 
+func processContent(content string, name string, namespace string, kind string)(string, error) {
+	any := map[string]interface{}{}
+	err := yaml.Unmarshal([]byte(content), &any)
+	if err != nil {
+		return "", fmt.Errorf("parsing yaml: %v", err)
+	}
+	_, ok := any["metadata"]
+	if !ok {
+		any["metadata"] = map[interface {}]interface {}{}
+	}
+
+	any["kind"] = kind
+	metadata := any["metadata"].(map[interface {}]interface {})
+	if namespace != "" {
+		metadata["namespace"] = namespace
+	} else {
+		_, ok = metadata["namespace"]
+		if ok {
+			return "", fmt.Errorf("no namespace provided but yml has namespace")
+		}
+	}
+	metadata["name"] = name
+	any["metadata"] = metadata
+
+	out, err := yaml.Marshal(any)
+	if err != nil {
+		return "", fmt.Errorf("generating yaml: %v", err)
+	}
+	return string(out), nil
+}
+
 func resourceManifestCreate(d *schema.ResourceData, m interface{}) error {
+	name := d.Get("name").(string)
+	kind := d.Get("kind").(string)
+	namespace, ok := d.GetOk("namespace")
+	if !ok {
+		namespace = ""
+	}
+
 	kubeconfig, cleanup, err := kubeconfigPath(m)
 	if err != nil {
 		return fmt.Errorf("determining kubeconfig: %v", err)
 	}
 	defer cleanup()
 
+	processed, err := processContent(d.Get("content").(string), name, namespace.(string), kind)
+	if err != nil {
+		return fmt.Errorf("processing content: %v", err)
+	}
+
 	cmd := kubectl(m, kubeconfig, "apply", "-f", "-")
-	cmd.Stdin = strings.NewReader(d.Get("content").(string))
+	cmd.Stdin = strings.NewReader(processed)
 	if err := run(cmd); err != nil {
 		return err
 	}
 
-	stdout := &bytes.Buffer{}
-	cmd = kubectl(m, kubeconfig, "get", "-f", "-", "-o", "json")
-	cmd.Stdin = strings.NewReader(d.Get("content").(string))
-	cmd.Stdout = stdout
-	if err := run(cmd); err != nil {
-		return err
-	}
-
-	var data struct {
-		Items []struct {
-			Metadata struct {
-				Selflink string `json:"selflink"`
-			} `json:"metadata"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &data); err != nil {
-		return fmt.Errorf("decoding response: %v", err)
-	}
-	if len(data.Items) != 1 {
-		return fmt.Errorf("expected to create 1 resource, got %d", len(data.Items))
-	}
-	selflink := data.Items[0].Metadata.Selflink
-	if selflink == "" {
-		return fmt.Errorf("could not parse self-link from response %s", stdout.String())
-	}
-	d.SetId(selflink)
+	d.SetId(fmt.Sprintf("%s/%s/%s", kind, namespace.(string), name))
 	return nil
 }
 
 func resourceManifestUpdate(d *schema.ResourceData, m interface{}) error {
+	name := d.Get("name").(string)
+	kind := d.Get("kind").(string)
+	namespace, ok := d.GetOk("namespace")
+	if !ok {
+		namespace = ""
+	}
+
 	kubeconfig, cleanup, err := kubeconfigPath(m)
 	if err != nil {
 		return fmt.Errorf("determining kubeconfig: %v", err)
 	}
 	defer cleanup()
 
+	processed, err := processContent(d.Get("content").(string), name, namespace.(string), kind)
+	if err != nil {
+		return fmt.Errorf("processing content: %v", err)
+	}
+
 	cmd := kubectl(m, kubeconfig, "apply", "-f", "-")
-	cmd.Stdin = strings.NewReader(d.Get("content").(string))
+	cmd.Stdin = strings.NewReader(processed)
 	return run(cmd)
 }
 
-func resourceFromId(id string) (resource string, namespace string, err error) {
-	unescapedId, err := url.QueryUnescape(id)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to unescape id: %s with error: %v", id, err)
-	}
-	parts := strings.Split(unescapedId, "/")
-	if len(parts) < 2 {
-		return "", "", fmt.Errorf("failed to split id: %s", id)
-	}
-	resource = parts[len(parts)-2] + "/" + parts[len(parts)-1]
-
-	for i, part := range parts {
-		if part == "namespaces" && len(parts) > i+1 {
-			namespace = parts[i+1]
-			break
-		}
-	}
-	return resource, namespace, nil
-}
-
 func resourceManifestDelete(d *schema.ResourceData, m interface{}) error {
-	resource, namespace, err := resourceFromId(d.Id())
-	if err != nil {
-		return fmt.Errorf("failed to get resource from id with error: %v", err)
+	name := d.Get("name").(string)
+	kind := d.Get("kind").(string)
+	args := []string{"delete", kind, name}
+
+	namespace, ok := d.GetOk("namespace")
+	if ok {
+		args = append(args, "-n", namespace.(string))
 	}
-	args := []string{"delete", resource}
-	if namespace != "" {
-		args = append(args, "-n", namespace)
-	}
+
 	kubeconfig, cleanup, err := kubeconfigPath(m)
 	if err != nil {
 		return fmt.Errorf("determining kubeconfig: %v", err)
@@ -228,14 +255,19 @@ func resourceManifestDelete(d *schema.ResourceData, m interface{}) error {
 }
 
 func resourceManifestRead(d *schema.ResourceData, m interface{}) error {
-	resource, namespace, err := resourceFromId(d.Id())
-	if err != nil {
-		return fmt.Errorf("failed to get resource from id with error: %v", err)
+	name := d.Get("name").(string)
+	kind := d.Get("kind").(string)
+	args := []string{"get", "--ignore-not-found", kind, name}
+
+	// If importing a state without name or kind set
+	if name == "" || kind == "" {
+		d.SetId("")
+		return nil
 	}
 
-	args := []string{"get", "--ignore-not-found", resource}
-	if namespace != "" {
-		args = append(args, "-n", namespace)
+	namespace, ok := d.GetOk("namespace")
+	if ok {
+		args = append(args, "-n", namespace.(string))
 	}
 
 	stdout := &bytes.Buffer{}
