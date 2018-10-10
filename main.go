@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -187,10 +188,14 @@ func resourceManifestUpdate(d *schema.ResourceData, m interface{}) error {
 	return run(cmd)
 }
 
-func resourceFromSelflink(s string) (resource, namespace string, ok bool) {
-	parts := strings.Split(s, "/")
+func resourceFromId(id string) (resource string, namespace string, err error) {
+	unescapedId, err := url.QueryUnescape(id)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to unescape id: %s with error: %v", id, err)
+	}
+	parts := strings.Split(unescapedId, "/")
 	if len(parts) < 2 {
-		return "", "", false
+		return "", "", fmt.Errorf("failed to split id: %s", id)
 	}
 	resource = parts[len(parts)-2] + "/" + parts[len(parts)-1]
 
@@ -200,13 +205,13 @@ func resourceFromSelflink(s string) (resource, namespace string, ok bool) {
 			break
 		}
 	}
-	return resource, namespace, true
+	return resource, namespace, nil
 }
 
 func resourceManifestDelete(d *schema.ResourceData, m interface{}) error {
-	resource, namespace, ok := resourceFromSelflink(d.Id())
-	if !ok {
-		return fmt.Errorf("invalid resource id: %s", d.Id())
+	resource, namespace, err := resourceFromId(d.Id())
+	if err != nil {
+		return fmt.Errorf("failed to get resource from id with error: %v", err)
 	}
 	args := []string{"delete", resource}
 	if namespace != "" {
@@ -223,9 +228,9 @@ func resourceManifestDelete(d *schema.ResourceData, m interface{}) error {
 }
 
 func resourceManifestRead(d *schema.ResourceData, m interface{}) error {
-	resource, namespace, ok := resourceFromSelflink(d.Id())
-	if !ok {
-		return fmt.Errorf("invalid resource id: %s", d.Id())
+	resource, namespace, err := resourceFromId(d.Id())
+	if err != nil {
+		return fmt.Errorf("failed to get resource from id with error: %v", err)
 	}
 
 	args := []string{"get", "--ignore-not-found", resource}
