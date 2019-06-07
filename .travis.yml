@@ -3,13 +3,13 @@ go:
 - '1.12'
 
 script:
-- go build
-- mv terraform-provider-k8s terraform-provider-k8s_$TRAVIS_TAG
+- make dist
 
 deploy:
   provider: releases
   api_key: $GITHUB_TOKEN
-  file: terraform-provider-k8s_$TRAVIS_TAG
+  file_glob:
+  file: terraform-provider-k8s_$TRAVIS_TAG*
   skip_cleanup: true
   on:
     tags: true
