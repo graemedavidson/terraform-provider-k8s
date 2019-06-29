@@ -1,3 +1,4 @@
+GOVARS  := CGO_ENABLED=0
 VERSION := $(shell git describe --tags --always --dirty="-dev")
 
 release: clean github-release dist
@@ -58,18 +59,18 @@ dist: goget
 	#========================================================================
 	# X86
 	#------------------------------------------------------------------------
-	GOOS=linux GOARCH=amd64 go build -o terraform-provider-k8s_$(VERSION)-linux-amd64
+	$(GOVARS) GOOS=linux GOARCH=amd64 go build -o terraform-provider-k8s_$(VERSION)-linux-amd64
 
 	#------------------------------------------------------------------------
 	# arm
 	#------------------------------------------------------------------------
-	GOOS=linux GOARCH=arm go build -o terraform-provider-k8s_$(VERSION)-linux-arm
-	GOOS=linux GOARCH=arm64 go build -o terraform-provider-k8s_$(VERSION)-linux-arm64
+	$(GOVARS) GOOS=linux GOARCH=arm go build -o terraform-provider-k8s_$(VERSION)-linux-arm
+	$(GOVARS) GOOS=linux GOARCH=arm64 go build -o terraform-provider-k8s_$(VERSION)-linux-arm64
 
 	#========================================================================
 	# macOS
 	#========================================================================
-	GOOS=darwin GOARCH=amd64 go build -o terraform-provider-k8s_$(VERSION)-darwin-amd64
+	$(GOVARS) GOOS=darwin GOARCH=amd64 go build -o terraform-provider-k8s_$(VERSION)-darwin-amd64
 
 goget:
 	go get

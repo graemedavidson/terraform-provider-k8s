@@ -147,7 +147,9 @@ func kubectl(m interface{}, kubeconfig string, args ...string) *exec.Cmd {
 		args = append([]string{"--context", context}, args...)
 	}
 
-	return exec.Command("kubectl", args...)
+	cmd := exec.Command("kubectl", args...)
+	cmd.Env = os.Environ()
+	return cmd
 }
 
 func processContent(content string, name string, namespace string, kind string)(string, error) {
